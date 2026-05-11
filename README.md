@@ -243,6 +243,8 @@ All responses are JSON. CORS headers are included on every response, so the Angu
 | `POST` | `/api/totw/stop` | Stop TOTW monitoring |
 | `POST` | `/api/totw/post` | Force-post TOTW |
 | `POST` | `/api/toty/post` | Force-post TOTY |
+| `GET` | `/api/config` | Current channel config (Firestore values merged with env vars) |
+| `POST` | `/api/config/reload` | Reload config from Firestore and auto-start stopped monitors that now have a channel |
 
 **`GET /api/status` response shape:**
 
@@ -302,7 +304,13 @@ SUPERLIGA_FIXTURES_HOUR=10  # default: Monday 10:00
 SUPERLIGA_RESULTS_HOUR=10   # default: Wednesday 10:00
 
 # Admin API key — must match adminApiKey in the Angular frontend environment.ts
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ADMIN_API_KEY=
+
+# Firebase project ID — enables the bot to read channel config from Firestore.
+# Set to your Firebase project ID (e.g. vpg-romania).
+# If unset, the bot uses only the env vars above for channel IDs.
+FIREBASE_PROJECT_ID=
 
 # Set automatically by Render; used for self-ping to prevent spin-down
 RENDER_EXTERNAL_URL=
@@ -324,6 +332,7 @@ commands/
 lib/                     — Shared utilities
   date-utils.js          — Timezone-aware date helpers (Bucharest EET/EEST)
   totw-client.js         — TOTW/TOTY leaderboard fetcher + position resolver
+  channel-config.js      — Runtime channel config: reads env vars, overlaid by Firestore at startup
 
 generators/              — Canvas image renderers (no Discord logic)
   totw.js                — generateTOTWImage (used for both TOTW and TOTY)
