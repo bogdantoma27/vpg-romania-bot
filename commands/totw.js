@@ -13,7 +13,8 @@ const TIMEZONE = 'Europe/Bucharest';
 const TICK_MS  = 60 * 1000;
 const SCHEDULE = { hour: Number(process.env.TOTW_HOUR) || 18, days: [3] };
 
-const CH_TOTW = () => process.env.TOTW_CHANNEL_ID || '';
+const { config: channelConfig } = require('../lib/channel-config');
+const CH_TOTW = () => channelConfig.totwChannelId;
 
 const runLog  = new Set();
 let tickTimer = null;

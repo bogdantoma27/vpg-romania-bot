@@ -7,8 +7,9 @@ const {
   fetchCurrentSeason, fetchAllLeaderboards, resolvePositions, fetchLeagueLogos,
 } = require('../lib/totw-client');
 
-// Falls back to TOTW_CHANNEL_ID if a dedicated TOTY channel is not configured
-const CH_TOTY = () => process.env.TOTY_CHANNEL_ID || process.env.TOTW_CHANNEL_ID || '';
+const { config: channelConfig } = require('../lib/channel-config');
+// Falls back to totwChannelId if a dedicated TOTY channel is not configured
+const CH_TOTY = () => channelConfig.totyChannelId || channelConfig.totwChannelId || '';
 
 let lastPostAt = null;
 

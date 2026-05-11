@@ -7,6 +7,8 @@ const fs   = require('fs');
 const path = require('path');
 const { Client, Collection, Events, GatewayIntentBits } = require('discord.js');
 
+const { config: channelConfig, loadFromFirestore } = require('./lib/channel-config');
+
 const token    = process.env.DISCORD_TOKEN;
 const ADMIN_KEY = process.env.ADMIN_API_KEY || '';
 
@@ -78,6 +80,11 @@ async function handleApi(req, res, client) {
   // GET /api/activity
   if (routePath === '/api/activity' && method === 'GET') {
     return json(res, 200, { activity: activityLog });
+  }
+
+  // GET /api/config
+  if (routePath === '/api/config' && method === 'GET') {
+    return json(res, 200, { config: channelConfig });
   }
 
   if (method !== 'POST') return json(res, 404, { error: 'Not found' });
@@ -180,6 +187,24 @@ async function handleApi(req, res, client) {
     return json(res, 202, { ok: true });
   }
 
+  // POST /api/config/reload
+  if (routePath === '/api/config/reload') {
+    const ok = await loadFromFirestore();
+    if (isDiscordReady) {
+      const superliga    = client.commands.get('superliga');
+      const nationalTeam = client.commands.get('national-team');
+      const totw         = client.commands.get('totw');
+      if ((channelConfig.superligaScheduleChannelId || channelConfig.superligaResultsChannelId || channelConfig.superligaClasamentChannelId) && superliga?.getStatus?.().running === false)
+        superliga.startMonitoring(client);
+      if (channelConfig.nationalTeamChannelId && nationalTeam?.getStatus?.().running === false)
+        nationalTeam.startMonitoring(client);
+      if (channelConfig.totwChannelId && totw?.getStatus?.().running === false)
+        totw.startMonitoring(client);
+    }
+    logActivity('config', 'reload', ok ? 'reloaded from Firestore' : 'Firestore unavailable, kept current');
+    return json(res, 200, { ok, config: channelConfig });
+  }
+
   return json(res, 404, { error: 'Not found' });
 }
 
@@ -248,21 +273,24 @@ loadCommands(path.join(__dirname, 'commands'));
 
 // ── Discord events ─────────────────────────────────────────────────────────────
 
-client.once(Events.ClientReady, readyClient => {
+client.once(Events.ClientReady, async readyClient => {
   isDiscordReady = true;
   console.log(`[VPG Romania] Logged in as ${readyClient.user.tag}`);
+
+  await loadFromFirestore();
+  setInterval(() => loadFromFirestore().catch(() => {}), 5 * 60 * 1000);
 
   const superliga    = client.commands.get('superliga');
   const nationalTeam = client.commands.get('national-team');
   const totw         = client.commands.get('totw');
 
-  if (process.env.SUPERLIGA_SCHEDULE_CHANNEL_ID || process.env.SUPERLIGA_RESULTS_CHANNEL_ID || process.env.SUPERLIGA_CLASAMENT_CHANNEL_ID) {
+  if (channelConfig.superligaScheduleChannelId || channelConfig.superligaResultsChannelId || channelConfig.superligaClasamentChannelId) {
     if (superliga?.startMonitoring) superliga.startMonitoring(readyClient);
   }
-  if (process.env.VPG_NATIONAL_TEAM_CHANNEL_ID) {
+  if (channelConfig.nationalTeamChannelId) {
     if (nationalTeam?.startMonitoring) nationalTeam.startMonitoring(readyClient);
   }
-  if (process.env.TOTW_CHANNEL_ID) {
+  if (channelConfig.totwChannelId) {
     if (totw?.startMonitoring) totw.startMonitoring(readyClient);
   }
 });

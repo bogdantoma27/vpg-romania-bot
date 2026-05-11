@@ -10,9 +10,10 @@ const VPG_IMAGE_BASE = 'https://virtualprogaming.com/cdn-cgi/imagedelivery/cl8oc
 const TIMEZONE       = 'Europe/Bucharest';
 const TICK_MS        = 60 * 1000;
 
-const CH_SCHEDULE  = () => process.env.SUPERLIGA_SCHEDULE_CHANNEL_ID  || '';
-const CH_RESULTS   = () => process.env.SUPERLIGA_RESULTS_CHANNEL_ID   || '';
-const CH_CLASAMENT = () => process.env.SUPERLIGA_CLASAMENT_CHANNEL_ID || '';
+const { config: channelConfig } = require('../lib/channel-config');
+const CH_SCHEDULE  = () => channelConfig.superligaScheduleChannelId;
+const CH_RESULTS   = () => channelConfig.superligaResultsChannelId;
+const CH_CLASAMENT = () => channelConfig.superligaClasamentChannelId;
 
 // Schedule (Bucharest time):
 const SUPERLIGA_FIXTURES_HOUR = Number(process.env.SUPERLIGA_FIXTURES_HOUR) || 10;

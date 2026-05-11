@@ -12,7 +12,7 @@ const TOURNAMENTS = [
 
 const VPG_API_BASE   = 'https://api.virtualprogaming.com/public';
 const VPG_IMAGE_BASE = 'https://virtualprogaming.com/cdn-cgi/imagedelivery/cl8ocWLdmZDs72LEaQYaYw';
-const CHANNEL_ID     = process.env.VPG_NATIONAL_TEAM_CHANNEL_ID;
+const { config: channelConfig } = require('../lib/channel-config');
 const TIMEZONE       = 'Europe/Bucharest';
 const TICK_MS        = 60 * 1000;
 
@@ -140,13 +140,13 @@ async function postAndClean(channel, imagePath) {
 // ── Poll cycle ─────────────────────────────────────────────────────────────────
 
 async function runPollCycle(client, { force = false } = {}) {
-  if (!CHANNEL_ID) {
-    console.warn('[NationalTeam] VPG_NATIONAL_TEAM_CHANNEL_ID not set — skipping.');
+  if (!channelConfig.nationalTeamChannelId) {
+    console.warn('[NationalTeam] nationalTeamChannelId not set — skipping.');
     return;
   }
   let channel;
   try {
-    channel = await client.channels.fetch(CHANNEL_ID);
+    channel = await client.channels.fetch(channelConfig.nationalTeamChannelId);
     if (!channel?.isTextBased()) { console.error('[NationalTeam] Channel not found or not text-based.'); return; }
   } catch (err) { console.error('[NationalTeam] Could not fetch channel:', err.message); return; }
 
