@@ -3,7 +3,7 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const fs = require('fs');
 const { generateTOTWImage } = require('../generators/totw');
-const { getNowInTimezoneMeta } = require('../lib/date-utils');
+const { getNowInTimezoneMeta, computeNextScheduledRunAt } = require('../lib/date-utils');
 const {
   fetchCurrentSeason, fetchCurrentWeek, fetchAllLeaderboards,
   resolvePositions, fetchLeagueLogos, POSITIONS,
@@ -18,7 +18,6 @@ const CH_TOTW = () => channelConfig.totwChannelId;
 
 const runLog  = new Set();
 let tickTimer  = null;
-let nextRunAt  = null;
 let lastPostAt = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -105,8 +104,7 @@ module.exports = {
       if (tickTimer) {
         return interaction.reply({ content: '⚠️ TOTW monitoring is already running.', ephemeral: true });
       }
-      nextRunAt = new Date(Date.now() + TICK_MS).toISOString();
-      tickTimer = setInterval(() => { nextRunAt = new Date(Date.now() + TICK_MS).toISOString(); tick(interaction.client).catch(console.error); }, TICK_MS);
+      tickTimer = setInterval(() => tick(interaction.client).catch(console.error), TICK_MS);
       return interaction.reply({
         content: '✅ TOTW monitoring started — posts every Wednesday at 18:00 Bucharest time.',
         ephemeral: true,
@@ -119,7 +117,6 @@ module.exports = {
       }
       clearInterval(tickTimer);
       tickTimer = null;
-      nextRunAt = null;
       return interaction.reply({ content: '🛑 TOTW monitoring stopped.', ephemeral: true });
     }
 
@@ -142,8 +139,7 @@ module.exports = {
 
   startMonitoring(client) {
     if (tickTimer) return false;
-    nextRunAt = new Date(Date.now() + TICK_MS).toISOString();
-    tickTimer = setInterval(() => { nextRunAt = new Date(Date.now() + TICK_MS).toISOString(); tick(client).catch(console.error); }, TICK_MS);
+    tickTimer = setInterval(() => tick(client).catch(console.error), TICK_MS);
     console.log('[TOTW] Auto-started monitoring (Wednesday 18:00 Bucharest).');
     return true;
   },
@@ -152,9 +148,12 @@ module.exports = {
     if (!tickTimer) return false;
     clearInterval(tickTimer);
     tickTimer = null;
-    nextRunAt = null;
     return true;
   },
 
-  getStatus: () => ({ running: tickTimer !== null, lastPostAt, nextRunAt }),
+  getStatus: () => ({
+    running: tickTimer !== null,
+    lastPostAt,
+    nextRunAt: tickTimer ? computeNextScheduledRunAt([SCHEDULE], TIMEZONE) : null,
+  }),
 };

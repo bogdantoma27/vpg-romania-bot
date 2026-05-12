@@ -3,7 +3,7 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const fs = require('fs');
 const { generateTeamReportImage, isRomania } = require('../generators/vpg-national-team');
-const { getNowInTimezoneMeta } = require('../lib/date-utils');
+const { getNowInTimezoneMeta, computeNextScheduledRunAt } = require('../lib/date-utils');
 
 const TOURNAMENTS = [
   { slug: 'World-Esports-Cup',        name: 'VPG World Cup',      baseSeason: 4 },
@@ -29,7 +29,6 @@ const seededTeams          = new Set();
 const runLog               = new Set();
 let tickTimer              = null;
 let lastPostAt             = null;
-let nextRunAt              = null;
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
@@ -261,8 +260,7 @@ module.exports = {
         await interaction.reply({ content: 'VPG national team monitoring is already running.', ephemeral: true });
         return;
       }
-      nextRunAt = new Date(Date.now() + TICK_MS).toISOString();
-      tickTimer = setInterval(() => { nextRunAt = new Date(Date.now() + TICK_MS).toISOString(); tick(interaction.client).catch(console.error); }, TICK_MS);
+      tickTimer = setInterval(() => tick(interaction.client).catch(console.error), TICK_MS);
       await interaction.reply({ content: '✅ Started VPG Romania national team monitoring (Mon/Tue/Wed at 12:00 Bucharest time).', ephemeral: true });
       return;
     }
@@ -274,7 +272,6 @@ module.exports = {
       }
       clearInterval(tickTimer);
       tickTimer = null;
-      nextRunAt = null;
       await interaction.reply({ content: '🛑 Stopped VPG Romania national team monitoring.', ephemeral: true });
       return;
     }
@@ -292,8 +289,7 @@ module.exports = {
 
   startMonitoring(client) {
     if (tickTimer) return false;
-    nextRunAt = new Date(Date.now() + TICK_MS).toISOString();
-    tickTimer = setInterval(() => { nextRunAt = new Date(Date.now() + TICK_MS).toISOString(); tick(client).catch(console.error); }, TICK_MS);
+    tickTimer = setInterval(() => tick(client).catch(console.error), TICK_MS);
     console.log('[NationalTeam] Auto-started monitoring (Mon/Tue/Wed at 12:00 Bucharest time).');
     return true;
   },
@@ -302,9 +298,12 @@ module.exports = {
     if (!tickTimer) return false;
     clearInterval(tickTimer);
     tickTimer = null;
-    nextRunAt = null;
     return true;
   },
 
-  getStatus: () => ({ running: tickTimer !== null, lastPostAt, nextRunAt }),
+  getStatus: () => ({
+    running: tickTimer !== null,
+    lastPostAt,
+    nextRunAt: tickTimer ? computeNextScheduledRunAt(SCHEDULES, TIMEZONE) : null,
+  }),
 };
