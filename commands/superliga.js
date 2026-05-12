@@ -25,8 +25,9 @@ const SCHEDULES = [
 ];
 
 const runLog  = new Set();
-let tickTimer = null;
+let tickTimer  = null;
 let lastPostAt = null;
+let nextRunAt  = null;
 
 function offsetDayKey(dayKey, days) {
   const d = new Date(`${dayKey}T12:00:00Z`);
@@ -393,7 +394,8 @@ module.exports = {
         await interaction.reply({ content: 'Superliga monitoring is already running.', ephemeral: true });
         return;
       }
-      tickTimer = setInterval(() => tick(interaction.client).catch(console.error), TICK_MS);
+      nextRunAt = new Date(Date.now() + TICK_MS).toISOString();
+      tickTimer = setInterval(() => { nextRunAt = new Date(Date.now() + TICK_MS).toISOString(); tick(interaction.client).catch(console.error); }, TICK_MS);
       await interaction.reply({ content: '✅ Started Superliga România monitoring (checks every minute).', ephemeral: true });
       return;
     }
@@ -405,6 +407,7 @@ module.exports = {
       }
       clearInterval(tickTimer);
       tickTimer = null;
+      nextRunAt = null;
       await interaction.reply({ content: '🛑 Stopped Superliga România monitoring.', ephemeral: true });
       return;
     }
@@ -433,7 +436,8 @@ module.exports = {
 
   startMonitoring(client) {
     if (tickTimer) return false;
-    tickTimer = setInterval(() => tick(client).catch(console.error), TICK_MS);
+    nextRunAt = new Date(Date.now() + TICK_MS).toISOString();
+    tickTimer = setInterval(() => { nextRunAt = new Date(Date.now() + TICK_MS).toISOString(); tick(client).catch(console.error); }, TICK_MS);
     console.log('[Superliga] Auto-started monitoring.');
     return true;
   },
@@ -442,8 +446,9 @@ module.exports = {
     if (!tickTimer) return false;
     clearInterval(tickTimer);
     tickTimer = null;
+    nextRunAt = null;
     return true;
   },
 
-  getStatus: () => ({ running: tickTimer !== null, lastPostAt }),
+  getStatus: () => ({ running: tickTimer !== null, lastPostAt, nextRunAt }),
 };
