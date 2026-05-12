@@ -20,32 +20,32 @@ const GD_POS = '#4ADE80';
 const GD_NEG = '#F87171';
 const FONT   = 'Arial, Verdana, sans-serif';
 
-const W    = 1400;
+const W              = 1400;
+const TARGET_MATCH_H = 922;   // fixed canvas height for etapa images
 const PAD  = 40;
 const FLAG = 5;
 const CR   = 12;
 
-// Standings layout — 8 cols: J V E Î GM GÎ GD PCT
-const ST_ROW    = 90;
-const ST_LOG    = 52;
-const ST_HDR    = 58;
-const STAT_COLS = ['J', 'V', 'E', 'Î', 'GM', 'GÎ', 'GD', 'PCT'];
-const STAT_W    = 78;
-const STATS_R   = W - PAD;
-const STATS_L   = STATS_R - STAT_COLS.length * STAT_W;
-const C_RANK    = PAD + 22;
-const C_LOGO    = PAD + 60;
-const C_NAME    = PAD + 124;
-// FORMA (last 5 results) — right of team name, left of stat columns
+// Standings layout — left-to-right: rank · logo · name(250px) · forma · 8 stats
+const ST_ROW     = 76;
+const ST_LOG     = 44;
+const ST_HDR     = 48;
+const STAT_COLS  = ['J', 'V', 'E', 'Î', 'GM', 'GÎ', 'GD', 'PCT'];
+const C_RANK     = PAD + 22;
+const C_LOGO     = PAD + 60;
+const C_NAME     = PAD + 124;
+const C_NAME_MAX = 250;                                    // explicit cap — stat cols get the rest
 const FORMA_DOTS = 5;
-const FORMA_SZ   = 26;
-const FORMA_GAP  = 5;
-const FORMA_PX   = FORMA_DOTS * FORMA_SZ + (FORMA_DOTS - 1) * FORMA_GAP; // 150px
-const FORMA_R    = STATS_L - 16;
-const FORMA_L    = FORMA_R - FORMA_PX;
-const FORMA_CX   = (FORMA_L + FORMA_R) / 2;
-const C_NAME_MAX = FORMA_L - C_NAME - 16;
-const statCX    = (i) => STATS_L + i * STAT_W + STAT_W / 2;
+const FORMA_SZ   = 24;
+const FORMA_GAP  = 4;
+const FORMA_PX   = FORMA_DOTS * FORMA_SZ + (FORMA_DOTS - 1) * FORMA_GAP; // 136px
+const FORMA_L    = C_NAME + C_NAME_MAX + 14;              // 428
+const FORMA_R    = FORMA_L + FORMA_PX;                    // 564
+const FORMA_CX   = (FORMA_L + FORMA_R) / 2;              // 496
+const STATS_L    = FORMA_R + 14;                          // 578
+const STATS_R    = W - PAD;                               // 1360
+const STAT_W     = Math.floor((STATS_R - STATS_L) / STAT_COLS.length); // 97px (vs 78 before)
+const statCX     = (i) => STATS_L + i * STAT_W + STAT_W / 2;
 
 // Match row layout
 const MR_ROW  = 106;
@@ -200,19 +200,24 @@ function drawDateDecoration(ctx, label, y) {
 // ── Standings card ────────────────────────────────────────────────────────────
 // entries: { team_logo (VPG id), team_name, wins, draws, losses, score_for, score_against, points }
 
-async function drawStandingsCard(ctx, entries, startY, formMap) {
-  const norm  = s => String(s || '').trim().toLowerCase();
-  const cw    = W - 2 * PAD;
-  const cardH = ST_HDR + entries.length * ST_ROW;
+async function drawStandingsCard(ctx, entries, startY, formMap, scale = 1) {
+  const norm   = s => String(s || '').trim().toLowerCase();
+  const cw     = W - 2 * PAD;
+  const rowH   = Math.round(ST_ROW   * scale);
+  const logSz  = Math.round(ST_LOG   * scale);
+  const hdrH   = Math.round(ST_HDR   * scale);
+  const fSz    = Math.round(FORMA_SZ  * scale);
+  const fGap   = Math.round(FORMA_GAP * scale);
+  const cardH  = hdrH + entries.length * rowH;
 
   rrPath(ctx, PAD, startY, cw, cardH, CR);
   ctx.fillStyle = CARD; ctx.fill();
   rrPath(ctx, PAD, startY, cw, cardH, CR);
   ctx.strokeStyle = BORDER; ctx.lineWidth = 1; ctx.stroke();
 
-  const hY = startY + ST_HDR / 2;
+  const hY = startY + hdrH / 2;
   ctx.save();
-  ctx.font = `bold 18px ${FONT}`; ctx.fillStyle = TEXTM;
+  ctx.font = `bold ${Math.round(18 * scale)}px ${FONT}`; ctx.fillStyle = TEXTM;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('#', C_RANK, hY);
   ctx.textAlign = 'left'; ctx.fillText('ECHIPĂ', C_NAME, hY);
@@ -222,58 +227,57 @@ async function drawStandingsCard(ctx, entries, startY, formMap) {
   ctx.restore();
 
   ctx.fillStyle = BORDER;
-  ctx.fillRect(PAD + 1, startY + ST_HDR, cw - 2, 1);
+  ctx.fillRect(PAD + 1, startY + hdrH, cw - 2, 1);
 
   for (let i = 0; i < entries.length; i++) {
     const e    = entries[i];
-    const rowY = startY + ST_HDR + i * ST_ROW;
-    const cy   = rowY + ST_ROW / 2;
-    const hl   = false;
+    const rowY = startY + hdrH + i * rowH;
+    const cy   = rowY + rowH / 2;
     const last = i === entries.length - 1;
 
     if (i % 2 === 1) {
       ctx.fillStyle = 'rgba(255,255,255,0.025)';
-      ctx.fillRect(PAD + 1, rowY, cw - 2, ST_ROW);
+      ctx.fillRect(PAD + 1, rowY, cw - 2, rowH);
     }
 
     if (!last) {
       ctx.save(); ctx.globalAlpha = 0.4; ctx.fillStyle = BORDER;
-      ctx.fillRect(PAD + 1, rowY + ST_ROW, cw - 2, 1);
+      ctx.fillRect(PAD + 1, rowY + rowH, cw - 2, 1);
       ctx.restore();
     }
 
     ctx.save();
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = `bold 20px ${FONT}`; ctx.fillStyle = hl ? RO_Y : TEXTD;
+    ctx.font = `bold ${Math.round(20 * scale)}px ${FONT}`; ctx.fillStyle = TEXTD;
     ctx.fillText(String(i + 1), C_RANK, cy);
     ctx.restore();
 
-    await drawLogo(ctx, e.team_logo, e.team_name, C_LOGO, cy - ST_LOG / 2, ST_LOG);
+    await drawLogo(ctx, e.team_logo, e.team_name, C_LOGO, cy - logSz / 2, logSz);
 
     ctx.save();
-    ctx.font = `20px ${FONT}`;
+    ctx.font = `${Math.round(20 * scale)}px ${FONT}`;
     ctx.fillStyle = TEXT;
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillText(clamp(ctx, e.team_name || '', C_NAME_MAX), C_NAME, cy);
     ctx.restore();
 
-    // FORMA indicators — right-aligned: rightmost slot = most recent result
+    // FORMA indicators
     const form = formMap ? (formMap.get(norm(e.team_name)) || []) : [];
     for (let fi = 0; fi < FORMA_DOTS; fi++) {
       const result = form[FORMA_DOTS - 1 - fi];
-      const fx = FORMA_L + fi * (FORMA_SZ + FORMA_GAP);
-      const fy = cy - FORMA_SZ / 2;
-      rrPath(ctx, fx, fy, FORMA_SZ, FORMA_SZ, 4);
+      const fx = FORMA_L + fi * (fSz + fGap);
+      const fy = cy - fSz / 2;
+      rrPath(ctx, fx, fy, fSz, fSz, 4);
       if (!result) {
         ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
       } else {
         ctx.fillStyle = result === 'W' ? GD_POS : result === 'D' ? RO_Y : GD_NEG;
         ctx.fill();
         ctx.save();
-        ctx.font = `bold ${Math.round(FORMA_SZ * 0.58)}px ${FONT}`;
+        ctx.font = `bold ${Math.round(fSz * 0.58)}px ${FONT}`;
         ctx.fillStyle = BG;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(result, fx + FORMA_SZ / 2, cy);
+        ctx.fillText(result, fx + fSz / 2, cy);
         ctx.restore();
       }
     }
@@ -286,7 +290,7 @@ async function drawStandingsCard(ctx, entries, startY, formMap) {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     vals.forEach((v, vi) => {
       const isPts = vi === 7, isGd = vi === 6;
-      ctx.font      = isPts ? `bold 20px ${FONT}` : `18px ${FONT}`;
+      ctx.font      = isPts ? `bold ${Math.round(20 * scale)}px ${FONT}` : `${Math.round(18 * scale)}px ${FONT}`;
       ctx.fillStyle = isPts ? TEXT
         : isGd       ? (gd > 0 ? GD_POS : gd < 0 ? GD_NEG : TEXTM)
         : TEXTD;
@@ -301,61 +305,65 @@ async function drawStandingsCard(ctx, entries, startY, formMap) {
 // ── Matches card ──────────────────────────────────────────────────────────────
 // matches: { home_logo (VPG id), away_logo (VPG id), home_name, away_name, home_score, away_score }
 
-async function drawMatchesCard(ctx, matches, startY, showScore) {
-  const cw    = W - 2 * PAD;
-  const cardH = matches.length * MR_ROW;
+async function drawMatchesCard(ctx, matches, startY, showScore, scale = 1, colX = PAD, colW = W - 2 * PAD) {
+  const hScale = colW / (W - 2 * PAD);
+  const rowH   = Math.round(MR_ROW  * scale);
+  const logoSz = Math.round(MR_LOG  * scale * Math.min(1, Math.sqrt(hScale)));
+  const spad   = Math.round(MR_SPAD * scale * Math.min(1, hScale * 1.1));
+  const fScale = scale * Math.min(1, Math.max(0.7, hScale * 1.8));
+  const cardH  = matches.length * rowH;
 
-  rrPath(ctx, PAD, startY, cw, cardH, CR);
+  rrPath(ctx, colX, startY, colW, cardH, CR);
   ctx.fillStyle = CARD; ctx.fill();
-  rrPath(ctx, PAD, startY, cw, cardH, CR);
+  rrPath(ctx, colX, startY, colW, cardH, CR);
   ctx.strokeStyle = BORDER; ctx.lineWidth = 1; ctx.stroke();
 
-  const hlX = PAD + 12;
-  const hrX = PAD + cw - 12 - MR_LOG;
-  const scCX = PAD + cw / 2;
-  const hnX  = hlX + MR_LOG + 14;
-  const hnR  = scCX - MR_SPAD;
-  const anL  = scCX + MR_SPAD;
-  const anR  = hrX - 14;
+  const hlX  = colX + 12;
+  const hrX  = colX + colW - 12 - logoSz;
+  const scCX = colX + colW / 2;
+  const hnX  = hlX + logoSz + Math.round(10 * hScale);
+  const hnR  = scCX - spad;
+  const anL  = scCX + spad;
+  const anR  = hrX - Math.round(10 * hScale);
 
   for (let i = 0; i < matches.length; i++) {
     const m    = matches[i];
-    const rowY = startY + i * MR_ROW;
-    const cy   = rowY + MR_ROW / 2;
+    const rowY = startY + i * rowH;
+    const cy   = rowY + rowH / 2;
     const last = i === matches.length - 1;
 
     if (i % 2 === 1) {
       ctx.fillStyle = 'rgba(255,255,255,0.025)';
-      ctx.fillRect(PAD + 1, rowY, cw - 2, MR_ROW);
+      ctx.fillRect(colX + 1, rowY, colW - 2, rowH);
     }
 
     if (!last) {
       ctx.save(); ctx.globalAlpha = 0.4; ctx.fillStyle = BORDER;
-      ctx.fillRect(PAD + 1, rowY + MR_ROW, cw - 2, 1);
+      ctx.fillRect(colX + 1, rowY + rowH, colW - 2, 1);
       ctx.restore();
     }
 
-    await drawLogo(ctx, m.home_logo, m.home_name, hlX, cy - MR_LOG / 2, MR_LOG);
-    await drawLogo(ctx, m.away_logo, m.away_name, hrX, cy - MR_LOG / 2, MR_LOG);
+    await drawLogo(ctx, m.home_logo, m.home_name, hlX, cy - logoSz / 2, logoSz);
+    await drawLogo(ctx, m.away_logo, m.away_name, hrX, cy - logoSz / 2, logoSz);
 
     ctx.save();
     ctx.textBaseline = 'middle';
 
-    ctx.font = `22px ${FONT}`; ctx.fillStyle = TEXT;
+    ctx.font = `${Math.round(22 * fScale)}px ${FONT}`; ctx.fillStyle = TEXT;
     ctx.textAlign = 'left';
     ctx.fillText(clamp(ctx, m.home_name || '', hnR - hnX - 8), hnX, cy);
 
     const hs = m.home_score;
     const as = m.away_score;
     if (showScore && hs != null && as != null) {
-      ctx.font = `bold 36px ${FONT}`; ctx.fillStyle = TEXT; ctx.textAlign = 'center';
+      ctx.font = `bold ${Math.round(36 * fScale)}px ${FONT}`; ctx.fillStyle = TEXT; ctx.textAlign = 'center';
       ctx.fillText(`${hs}  –  ${as}`, scCX, cy);
     } else {
-      ctx.font = `bold 28px ${FONT}`; ctx.fillStyle = TEXTM; ctx.textAlign = 'center';
+      ctx.font = `bold ${Math.round(28 * fScale)}px ${FONT}`; ctx.fillStyle = TEXTM; ctx.textAlign = 'center';
       ctx.fillText('VS', scCX, cy);
     }
 
-    ctx.font = `22px ${FONT}`; ctx.fillStyle = TEXT;
+    ctx.font = `${Math.round(22 * fScale)}px ${FONT}`; ctx.fillStyle = TEXT;
     ctx.textAlign = 'right';
     ctx.fillText(clamp(ctx, m.away_name || '', anR - anL), anR, cy);
     ctx.restore();
@@ -367,8 +375,7 @@ async function drawMatchesCard(ctx, matches, startY, showScore) {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 async function generateClasamentImage({ entries, seasonLabel, leagueLogoUrl, communityLogoUrl, formMap }) {
-  const hdrH = 140 + FLAG + 16;
-  const H    = hdrH + ST_HDR + entries.length * ST_ROW + PAD + FLAG;
+  const H = (140 + FLAG + 16) + ST_HDR + entries.length * ST_ROW + PAD + FLAG;
 
   const canvas = createCanvas(W, H);
   const ctx    = canvas.getContext('2d');
@@ -387,8 +394,7 @@ async function generateClasamentImage({ entries, seasonLabel, leagueLogoUrl, com
 
 async function generateEtapaImage({ matches, etapaNumber, dateLabel, isResults = false, leagueLogoUrl, communityLogoUrl }) {
   const dateH = dateLabel ? 72 : 0;
-  const hdrH  = 140 + FLAG + 8 + dateH + 16;
-  const H     = hdrH + matches.length * MR_ROW + PAD + FLAG;
+  const H     = TARGET_MATCH_H;
 
   const canvas = createCanvas(W, H);
   const ctx    = canvas.getContext('2d');
@@ -407,7 +413,20 @@ async function generateEtapaImage({ matches, etapaNumber, dateLabel, isResults =
   }
 
   y += 16;
-  await drawMatchesCard(ctx, matches, y, isResults);
+
+  const use2Col = matches.length > 8;
+  const colW    = use2Col ? Math.floor((W - 3 * PAD) / 2) : W - 2 * PAD;
+  const halfN   = use2Col ? Math.ceil(matches.length / 2) : matches.length;
+  const scale   = Math.min(1, (H - y - PAD - FLAG) / (halfN * MR_ROW));
+
+  if (use2Col) {
+    const mid   = Math.ceil(matches.length / 2);
+    const colX2 = PAD + colW + PAD;
+    await drawMatchesCard(ctx, matches.slice(0, mid), y, isResults, scale, PAD,   colW);
+    await drawMatchesCard(ctx, matches.slice(mid),    y, isResults, scale, colX2, colW);
+  } else {
+    await drawMatchesCard(ctx, matches, y, isResults, scale);
+  }
 
   const dir    = await ensureOutputDir();
   const suffix = isResults ? 'results' : 'scheduled';
