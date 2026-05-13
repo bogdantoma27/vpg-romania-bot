@@ -273,9 +273,11 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
       for (let idx = 0; idx < sessionSize; idx++) {
         const absDay     = sortedMatchDays[idx];
         const dayMatches = byMatchDay.get(absDay);
-        const etapaNumber = target === 'results'
+        // Use the API's match_day (round number) directly — handles rescheduled matches correctly.
+        // Fall back to positional estimate only when match_day is missing/zero.
+        const etapaNumber = absDay > 0 ? absDay : (target === 'results'
           ? maxPlayed - (sessionSize - 1 - idx)
-          : maxPlayed + idx + 1;
+          : maxPlayed + idx + 1);
         const dateLabel  = formatDateRo(dayMatches[0].datetime);
         const imgPath    = await generateEtapaImage({ matches: dayMatches, etapaNumber, dateLabel, isResults: target === 'results', leagueLogoUrl, communityLogoUrl });
         const ch         = await getChannel(client, channelId);
