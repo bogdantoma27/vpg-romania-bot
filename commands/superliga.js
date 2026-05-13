@@ -80,53 +80,6 @@ async function fetchCurrentSeason() {
   return arr[0];
 }
 
-async function fetchAllSeasonMatches(season) {
-  const all = [];
-  const limit = 100;
-  for (let offset = 0; offset < 1000; offset += limit) {
-    const data  = await vpgGet(`/matches/?status=complete&season=${season}&limit=${limit}&offset=${offset}`);
-    const batch = Array.isArray(data) ? data : (data?.data ?? data?.results ?? []);
-    all.push(...batch);
-    const total = Number(data?.count ?? all.length);
-    if (!batch.length || all.length >= total) break;
-  }
-  const currentYear = new Date().getFullYear();
-  return all.filter(m => {
-    const dt = m.datetime ?? m.date ?? '';
-    if (dt && new Date(dt).getFullYear() !== currentYear) return false;
-    return true;
-  });
-}
-
-// tableEntries: array with { team_name, played } — used to cap form to games played this season
-function computeFormMap(matches, tableEntries = []) {
-  const norm = s => String(s || '').trim().toLowerCase();
-  const playedMap = new Map();
-  for (const e of tableEntries) playedMap.set(norm(e.team_name), Number(e.played ?? 0));
-
-  const byTeam = new Map();
-  for (const m of matches) {
-    const hs = m.home_score != null ? Number(m.home_score) : null;
-    const as = m.away_score != null ? Number(m.away_score) : null;
-    if (hs == null || as == null) continue;
-    const hN = norm(m.home_name ?? m.home_team_name ?? '');
-    const aN = norm(m.away_name ?? m.away_team_name ?? '');
-    const dt = m.datetime ?? m.date ?? '';
-    const hR = hs > as ? 'W' : hs === as ? 'D' : 'L';
-    const aR = as > hs ? 'W' : hs === as ? 'D' : 'L';
-    if (hN) { if (!byTeam.has(hN)) byTeam.set(hN, []); byTeam.get(hN).push({ dt, result: hR }); }
-    if (aN) { if (!byTeam.has(aN)) byTeam.set(aN, []); byTeam.get(aN).push({ dt, result: aR }); }
-  }
-  const formMap = new Map();
-  for (const [team, arr] of byTeam) {
-    arr.sort((a, b) => new Date(b.dt) - new Date(a.dt));
-    const played = playedMap.get(team);
-    const cap    = played != null ? Math.min(played, 5) : 5;
-    formMap.set(team, arr.slice(0, cap).map(r => r.result));
-  }
-  return formMap;
-}
-
 async function fetchTable(season) {
   const raw  = await vpgGet(`/table/?season=${season}&is_history=false`);
   const list = Array.isArray(raw) ? raw : (raw?.data ?? raw?.results ?? []);
@@ -263,21 +216,17 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
   const { leagueLogoUrl, communityLogoUrl } = await fetchLeagueLogos();
 
   const warnings = [];
-  let allCompleted = [], entries = [];
+  let entries = [];
   try {
-    [allCompleted, entries] = await Promise.all([
-      fetchAllSeasonMatches(season),
-      fetchTable(season),
-    ]);
+    entries = await fetchTable(season);
   } catch (err) { console.error('[Superliga] Failed to fetch base data:', err.message); }
 
-  const formMap   = computeFormMap(allCompleted, entries);
   const maxPlayed = entries.reduce((m, e) => Math.max(m, e.played ?? 0), 0);
 
   if (targetSet.has('clasament')) {
     try {
       if (entries.length) {
-        const imgPath = await generateClasamentImage({ entries, seasonLabel: `Sezon ${season}`, leagueLogoUrl, communityLogoUrl, formMap });
+        const imgPath = await generateClasamentImage({ entries, seasonLabel: `Sezon ${season}`, leagueLogoUrl, communityLogoUrl });
         const ch = await getChannel(client, CH_CLASAMENT());
         if (ch) { await postAndClean(ch, imgPath); posted++; console.log('[Superliga] Posted clasament.'); }
         else { warnings.push('No clasament channel configured (SUPERLIGA_CLASAMENT_CHANNEL_ID).'); console.warn('[Superliga] No clasament channel configured.'); }

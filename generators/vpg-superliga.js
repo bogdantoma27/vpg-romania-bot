@@ -26,7 +26,7 @@ const PAD  = 40;
 const FLAG = 5;
 const CR   = 12;
 
-// Standings layout — left-to-right: rank · logo · name(250px) · forma · 8 stats
+// Standings layout — left-to-right: rank · logo · name(250px) · 8 stats
 const ST_ROW     = 76;
 const ST_LOG     = 44;
 const ST_HDR     = 48;
@@ -34,17 +34,10 @@ const STAT_COLS  = ['J', 'V', 'E', 'Î', 'GM', 'GÎ', 'GD', 'PCT'];
 const C_RANK     = PAD + 22;
 const C_LOGO     = PAD + 60;
 const C_NAME     = PAD + 124;
-const C_NAME_MAX = 250;                                    // explicit cap — stat cols get the rest
-const FORMA_DOTS = 5;
-const FORMA_SZ   = 24;
-const FORMA_GAP  = 4;
-const FORMA_PX   = FORMA_DOTS * FORMA_SZ + (FORMA_DOTS - 1) * FORMA_GAP; // 136px
-const FORMA_L    = C_NAME + C_NAME_MAX + 14;              // 428
-const FORMA_R    = FORMA_L + FORMA_PX;                    // 564
-const FORMA_CX   = (FORMA_L + FORMA_R) / 2;              // 496
-const STATS_L    = FORMA_R + 14;                          // 578
+const C_NAME_MAX = 250;
+const STATS_L    = C_NAME + C_NAME_MAX + 14;              // 388
 const STATS_R    = W - PAD;                               // 1360
-const STAT_W     = Math.floor((STATS_R - STATS_L) / STAT_COLS.length); // 97px (vs 78 before)
+const STAT_W     = Math.floor((STATS_R - STATS_L) / STAT_COLS.length); // 121px
 const statCX     = (i) => STATS_L + i * STAT_W + STAT_W / 2;
 
 // Match row layout
@@ -200,14 +193,11 @@ function drawDateDecoration(ctx, label, y) {
 // ── Standings card ────────────────────────────────────────────────────────────
 // entries: { team_logo (VPG id), team_name, wins, draws, losses, score_for, score_against, points }
 
-async function drawStandingsCard(ctx, entries, startY, formMap, scale = 1) {
-  const norm   = s => String(s || '').trim().toLowerCase();
+async function drawStandingsCard(ctx, entries, startY, scale = 1) {
   const cw     = W - 2 * PAD;
   const rowH   = Math.round(ST_ROW   * scale);
   const logSz  = Math.round(ST_LOG   * scale);
   const hdrH   = Math.round(ST_HDR   * scale);
-  const fSz    = Math.round(FORMA_SZ  * scale);
-  const fGap   = Math.round(FORMA_GAP * scale);
   const cardH  = hdrH + entries.length * rowH;
 
   rrPath(ctx, PAD, startY, cw, cardH, CR);
@@ -222,7 +212,6 @@ async function drawStandingsCard(ctx, entries, startY, formMap, scale = 1) {
   ctx.fillText('#', C_RANK, hY);
   ctx.textAlign = 'left'; ctx.fillText('ECHIPĂ', C_NAME, hY);
   ctx.textAlign = 'center';
-  ctx.fillText('FORMA', FORMA_CX, hY);
   STAT_COLS.forEach((l, i) => ctx.fillText(l, statCX(i), hY));
   ctx.restore();
 
@@ -260,27 +249,6 @@ async function drawStandingsCard(ctx, entries, startY, formMap, scale = 1) {
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillText(clamp(ctx, e.team_name || '', C_NAME_MAX), C_NAME, cy);
     ctx.restore();
-
-    // FORMA indicators
-    const form = formMap ? (formMap.get(norm(e.team_name)) || []) : [];
-    for (let fi = 0; fi < FORMA_DOTS; fi++) {
-      const result = form[FORMA_DOTS - 1 - fi];
-      const fx = FORMA_L + fi * (fSz + fGap);
-      const fy = cy - fSz / 2;
-      rrPath(ctx, fx, fy, fSz, fSz, 4);
-      if (!result) {
-        ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fill();
-      } else {
-        ctx.fillStyle = result === 'W' ? GD_POS : result === 'D' ? RO_Y : GD_NEG;
-        ctx.fill();
-        ctx.save();
-        ctx.font = `bold ${Math.round(fSz * 0.58)}px ${FONT}`;
-        ctx.fillStyle = BG;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(result, fx + fSz / 2, cy);
-        ctx.restore();
-      }
-    }
 
     const gd    = (Number(e.score_for) || 0) - (Number(e.score_against) || 0);
     const gdStr = gd > 0 ? `+${gd}` : String(gd);
@@ -374,7 +342,7 @@ async function drawMatchesCard(ctx, matches, startY, showScore, scale = 1, colX 
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-async function generateClasamentImage({ entries, seasonLabel, leagueLogoUrl, communityLogoUrl, formMap }) {
+async function generateClasamentImage({ entries, seasonLabel, leagueLogoUrl, communityLogoUrl }) {
   const H = (140 + FLAG + 16) + ST_HDR + entries.length * ST_ROW + PAD + FLAG;
 
   const canvas = createCanvas(W, H);
@@ -384,7 +352,7 @@ async function generateClasamentImage({ entries, seasonLabel, leagueLogoUrl, com
   let y = await drawPageHeader(ctx, 'CLASAMENT SUPERLIGA', seasonLabel ? String(seasonLabel).toUpperCase() : 'SUPERLIGA ROMÂNIEI', leagueLogoUrl, communityLogoUrl);
   y += 16;
 
-  await drawStandingsCard(ctx, entries, y, formMap);
+  await drawStandingsCard(ctx, entries, y);
 
   const dir = await ensureOutputDir();
   const out = path.join(dir, `superliga-clasament-${Date.now()}.png`);
