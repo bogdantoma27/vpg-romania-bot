@@ -322,13 +322,13 @@ const data = new SlashCommandBuilder()
         opt.setName('targets')
           .setDescription('What to post (default: all)')
           .addChoices(
-            { name: 'All',                              value: 'all'                      },
-            { name: 'Clasament only',                   value: 'clasament'                },
-            { name: 'Meciuri programate (sapt. viit.)', value: 'scheduled'                },
-            { name: 'Meciuri programate (sapt. cur.)',  value: 'scheduled_current'        },
-            { name: 'Rezultate',                        value: 'results'                  },
-            { name: 'Rezultate + Clasament',            value: 'results,clasament'        },
-            { name: 'Programate + Clasament',           value: 'scheduled,clasament'      },
+            { name: 'All',                                value: 'all'                      },
+            { name: 'Clasament only',                     value: 'clasament'                },
+            { name: 'Programate (sapt. urmatoare)',       value: 'scheduled'                },
+            { name: 'Programate (sapt. +2)',              value: 'scheduled_next'           },
+            { name: 'Rezultate',                          value: 'results'                  },
+            { name: 'Rezultate + Clasament',              value: 'results,clasament'        },
+            { name: 'Programate + Clasament',             value: 'scheduled,clasament'      },
           )
       )
   );
@@ -365,11 +365,11 @@ module.exports = {
       try {
         const raw  = interaction.options.getString('targets') || 'all';
         const meta = getNowInTimezoneMeta(TIMEZONE);
-        const isCurrentWeek        = raw === 'scheduled_current' || raw.includes('scheduled_current');
-        const scheduledSessionIndex = isCurrentWeek ? 0 : 1;
+        // 'scheduled_next' = second upcoming game week (+1); everything else = nearest (0)
+        const scheduledSessionIndex = raw.includes('scheduled_next') ? 1 : 0;
         const targets = raw === 'all'
           ? ['scheduled', 'results', 'clasament']
-          : raw.split(',').map(t => t === 'scheduled_current' ? 'scheduled' : t);
+          : raw.split(',').map(t => t.replace('scheduled_next', 'scheduled').replace('scheduled_current', 'scheduled'));
         const { posted, warnings } = await runTargets(interaction.client, targets, meta.dayKey, { force: true, scheduledSessionIndex });
         const lines = [];
         if (posted > 0) lines.push(`✅ Posted ${posted} image(s) (targets: ${targets.join(', ')}).`);
