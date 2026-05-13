@@ -18,7 +18,7 @@ const RO_Y   = '#FCD116';
 const RO_R   = '#CE1126';
 const GD_POS = '#4ADE80';
 const GD_NEG = '#F87171';
-const FONT   = 'Arial, Verdana, sans-serif';
+const FONT   = 'Verdana';
 
 const W    = 1400;
 const PAD  = 40;

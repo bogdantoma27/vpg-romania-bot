@@ -6,7 +6,7 @@ const { createCanvas, loadImage } = require('@napi-rs/canvas');
 
 const VPG_CDN  = 'https://virtualprogaming.com/cdn-cgi/imagedelivery/cl8ocWLdmZDs72LEaQYaYw';
 const FLAG_CDN = 'https://flagcdn.com/w40';
-const FONT     = 'Arial, Verdana, sans-serif';
+const FONT     = 'Verdana';
 
 // ── Canvas layout ──────────────────────────────────────────────────────────────
 const W        = 1400;
