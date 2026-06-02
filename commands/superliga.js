@@ -368,7 +368,7 @@ module.exports = {
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
 
-    if (sub === 'start') {— wakes Mon/Wed at 09:00, posts at 10:00 Bucharest time
+    if (sub === 'start') {
       if (tickTimer) {
         await interaction.reply({ content: 'Superliga monitoring is already running.', ephemeral: true });
         return;
