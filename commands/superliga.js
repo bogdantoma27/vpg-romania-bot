@@ -24,6 +24,8 @@ const SCHEDULES = [
   { hour: SUPERLIGA_RESULTS_HOUR,  days: [3], targets: ['results', 'clasament', 'scheduled'], resultsDayOffset: -1, scheduledSessionIndex: 0 },
 ];
 
+const WAKEUP_HOUR = SUPERLIGA_FIXTURES_HOUR - 1; // Wake 1 hour before post time (09:00)
+
 const runLog  = new Set();
 let tickTimer  = null;
 let lastPostAt = null;
@@ -204,6 +206,27 @@ async function getChannel(client, id) {
   } catch { return null; }
 }
 
+function getGracePeriodMs() {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: TIMEZONE,
+    weekday: 'short',
+    hour: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(now);
+  const getByType = (type) => parts.find(p => p.type === type)?.value;
+  
+  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
+  const weekday = weekdayMap[getByType('weekday')] ?? -1;
+  const hour = Number(getByType('hour')) ?? -1;
+  
+  // Active window: Mon/Wed 09:00-10:00 (WAKEUP_HOUR to 10:00)
+  const isMatchDay = [1, 3].includes(weekday);
+  const isInWindow = isMatchDay && hour >= WAKEUP_HOUR && hour <= SUPERLIGA_FIXTURES_HOUR;
+  return isInWindow ? 0 : 45000; // 45 sec grace period if sleeping
+}
+
 // ── Run targets ────────────────────────────────────────────────────────────────
 
 async function runTargets(client, targets, dayKey, { force = false, resultsDayKey, scheduledSessionIndex = 0 } = {}) {
@@ -291,12 +314,18 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
 }
 
 // ── Schedule tick ──────────────────────────────────────────────────────────────
+// Wakes up 1 hour before scheduled post time to keep service alive
 
 async function tick(client) {
   const meta = getNowInTimezoneMeta(TIMEZONE);
   for (const sched of SCHEDULES) {
     if (!sched.days.includes(meta.weekday)) continue;
+    // Only active between wakeup and post hour (inclusive)
+    if (meta.hour < WAKEUP_HOUR || meta.hour > sched.hour) continue;
+    
+    // Only actually post at exactly the scheduled hour
     if (meta.hour !== sched.hour) continue;
+    
     const slotKey = `${meta.dayKey}:${sched.hour}:superliga`;
     if (runLog.has(slotKey)) continue;
     runLog.add(slotKey);
@@ -339,7 +368,7 @@ module.exports = {
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
 
-    if (sub === 'start') {
+    if (sub === 'start') {— wakes Mon/Wed at 09:00, posts at 10:00 Bucharest time
       if (tickTimer) {
         await interaction.reply({ content: 'Superliga monitoring is already running.', ephemeral: true });
         return;
@@ -361,7 +390,15 @@ module.exports = {
     }
 
     if (sub === 'post') {
-      await interaction.deferReply({ ephemeral: true });
+      const gracePeriod = getGracePeriodMs();
+      if (gracePeriod > 0) {
+        await interaction.deferReply({ ephemeral: true });
+        await interaction.editReply(`⏳ Service waking up — please wait ${gracePeriod / 1000 | 0} seconds...`);
+        await new Promise(r => setTimeout(r, gracePeriod));
+        await interaction.editReply({ content: '✅ Service ready — generating images...' });
+      } else {
+        await interaction.deferReply({ ephemeral: true });
+      }
       try {
         const raw  = interaction.options.getString('targets') || 'all';
         const meta = getNowInTimezoneMeta(TIMEZONE);

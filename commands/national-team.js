@@ -20,6 +20,8 @@ const SCHEDULES = [
   { hour: Number(process.env.VPG_NATIONAL_TEAM_HOUR) || 12, days: [1, 2, 3] },
 ];
 
+const WAKEUP_HOUR = SCHEDULES[0].hour - 1; // Wake 1 hour before post time (11:00)
+
 // Tournament logo cache — process-wide, logos don't change
 const _tournamentLogos = new Map();
 
@@ -137,6 +139,27 @@ async function postAndClean(channel, imagePath) {
   try { await fs.promises.unlink(imagePath); } catch { /* ignore */ }
 }
 
+function getGracePeriodMs() {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: TIMEZONE,
+    weekday: 'short',
+    hour: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(now);
+  const getByType = (type) => parts.find(p => p.type === type)?.value;
+  
+  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
+  const weekday = weekdayMap[getByType('weekday')] ?? -1;
+  const hour = Number(getByType('hour')) ?? -1;
+  
+  // Active window: Mon/Tue/Wed 11:00-12:00 (WAKEUP_HOUR to SCHEDULES[0].hour)
+  const isMatchDay = [1, 2, 3].includes(weekday);
+  const isInWindow = isMatchDay && hour >= WAKEUP_HOUR && hour <= SCHEDULES[0].hour;
+  return isInWindow ? 0 : 45000; // 45 sec grace period if sleeping
+}
+
 // ── Poll cycle ─────────────────────────────────────────────────────────────────
 
 async function runPollCycle(client, { force = false } = {}) {
@@ -226,12 +249,18 @@ async function processTournament({ slug, name, baseSeason }, channel, { force = 
 }
 
 // ── Tick (minute-level schedule check) ────────────────────────────────────────
+// Wakes up 1 hour before scheduled post time to keep service alive
 
 async function tick(client) {
   const { weekday, hour, dayKey } = getNowInTimezoneMeta(TIMEZONE);
   for (const slot of SCHEDULES) {
     if (!slot.days.includes(weekday)) continue;
-    if (slot.hour !== hour) continue;
+    // Only active between wakeup and post hour (inclusive)
+    if (hour < WAKEUP_HOUR || hour > slot.hour) continue;
+    
+    // Only actually post at exactly the scheduled hour
+    if (hour !== slot.hour) continue;
+    
     const key = `${dayKey}:${slot.hour}`;
     if (runLog.has(key)) continue;
     runLog.add(key);
@@ -239,7 +268,7 @@ async function tick(client) {
   }
 }
 
-// ── Slash command ──────────────────────────────────────────────────────────────
+// ── Slash command ──────────────────────────────────────────────────────────────— wakes Mon/Tue/Wed at 11:00, posts at 12:00 Bucharest time
 
 const data = new SlashCommandBuilder()
   .setName('national-team')
@@ -277,7 +306,15 @@ module.exports = {
     }
 
     if (sub === 'post') {
-      await interaction.deferReply({ ephemeral: true });
+      const gracePeriod = getGracePeriodMs();
+      if (gracePeriod > 0) {
+        await interaction.deferReply({ ephemeral: true });
+        await interaction.editReply(`⏳ Service waking up — please wait ${gracePeriod / 1000 | 0} seconds...`);
+        await new Promise(r => setTimeout(r, gracePeriod));
+        await interaction.editReply({ content: '✅ Service ready — fetching national team results...' });
+      } else {
+        await interaction.deferReply({ ephemeral: true });
+      }
       try {
         await runPollCycle(interaction.client, { force: true });
         await interaction.editReply('✅ VPG Romania national team results posted.');

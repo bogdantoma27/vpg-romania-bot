@@ -12,6 +12,7 @@ const {
 const TIMEZONE = 'Europe/Bucharest';
 const TICK_MS  = 60 * 1000;
 const SCHEDULE = { hour: Number(process.env.TOTW_HOUR) || 18, days: [3] };
+const WAKEUP_HOUR = SCHEDULE.hour - 1; // Wake 1 hour before post time
 
 const { config: channelConfig } = require('../lib/channel-config');
 const CH_TOTW = () => channelConfig.totwChannelId;
@@ -33,6 +34,26 @@ async function getChannel(client, id) {
 async function postAndClean(channel, imgPath) {
   await channel.send({ files: [imgPath] });
   try { await fs.promises.unlink(imgPath); } catch { /* ignore */ }
+}
+
+function getGracePeriodMs() {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: TIMEZONE,
+    weekday: 'short',
+    hour: '2-digit',
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(now);
+  const getByType = (type) => parts.find(p => p.type === type)?.value;
+  
+  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
+  const weekday = weekdayMap[getByType('weekday')] ?? -1;
+  const hour = Number(getByType('hour')) ?? -1;
+  
+  // Active window: Wed 17:00-18:00 (WAKEUP_HOUR to SCHEDULE.hour)
+  const isInWindow = weekday === 3 && hour >= WAKEUP_HOUR && hour <= SCHEDULE.hour;
+  return isInWindow ? 0 : 45000; // 45 sec grace period if sleeping
 }
 
 // ── Core build + post ──────────────────────────────────────────────────────────
@@ -67,15 +88,22 @@ async function buildAndPost(client) {
 }
 
 // ── Schedule tick (runs every minute) ─────────────────────────────────────────
+// Wakes up 1 hour before scheduled post time to keep service alive
 
 async function tick(client) {
   const meta = getNowInTimezoneMeta(TIMEZONE);
-  if (!SCHEDULE.days.includes(meta.weekday) || meta.hour !== SCHEDULE.hour) return;
-  const slotKey = `${meta.dayKey}:${SCHEDULE.hour}:totw`;
-  if (runLog.has(slotKey)) return;
-  runLog.add(slotKey);
-  console.log(`[TOTW] Scheduled fire at ${meta.dayKey} ${SCHEDULE.hour}:00`);
-  await buildAndPost(client).catch(err => console.error('[TOTW] Tick error:', err.message));
+  if (!SCHEDULE.days.includes(meta.weekday)) return;
+  // Only active between wakeup and post hour (inclusive)
+  if (meta.hour < WAKEUP_HOUR || meta.hour > SCHEDULE.hour) return;
+  
+  // Actually post at exactly SCHEDULE.hour
+  if (meta.hour === SCHEDULE.hour) {
+    const slotKey = `${meta.dayKey}:${SCHEDULE.hour}:totw`;
+    if (runLog.has(slotKey)) return;
+    runLog.add(slotKey);
+    console.log(`[TOTW] Scheduled fire at ${meta.dayKey} ${SCHEDULE.hour}:00`);
+    await buildAndPost(client).catch(err => console.error('[TOTW] Tick error:', err.message));
+  }
 }
 
 // ── Slash command ──────────────────────────────────────────────────────────────
@@ -99,7 +127,7 @@ module.exports = {
 
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
-
+wakes Wednesday at 17:00, posts
     if (sub === 'start') {
       if (tickTimer) {
         return interaction.reply({ content: '⚠️ TOTW monitoring is already running.', ephemeral: true });
@@ -121,7 +149,15 @@ module.exports = {
     }
 
     if (sub === 'post') {
-      await interaction.deferReply({ ephemeral: true });
+      const gracePeriod = getGracePeriodMs();
+      if (gracePeriod > 0) {
+        await interaction.deferReply({ ephemeral: true });
+        await interaction.editReply(`⏳ Service waking up — please wait ${gracePeriod / 1000 | 0} seconds...`);
+        await new Promise(r => setTimeout(r, gracePeriod));
+        await interaction.editReply({ content: '✅ Service ready — fetching TOTW...' });
+      } else {
+        await interaction.deferReply({ ephemeral: true });
+      }
       try {
         const result = await buildAndPost(interaction.client);
         if (!result) {
