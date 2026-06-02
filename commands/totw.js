@@ -127,7 +127,6 @@ module.exports = {
 
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
-wakes Wednesday at 17:00, posts
     if (sub === 'start') {
       if (tickTimer) {
         return interaction.reply({ content: '⚠️ TOTW monitoring is already running.', ephemeral: true });
