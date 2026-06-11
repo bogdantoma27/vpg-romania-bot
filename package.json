@@ -1,7 +1,7 @@
 {
   "name": "vpg-romania-bot",
   "version": "1.0.0",
-  "description": "Discord bot for VPG Romania Superliga, national team, TOTW and TOTY",
+  "description": "Discord bot for VPG Romania — Superliga, TOTW, TOTS and transfer monitoring",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {

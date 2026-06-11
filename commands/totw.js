@@ -5,14 +5,13 @@ const fs = require('fs');
 const { generateTOTWImage } = require('../generators/totw');
 const { getNowInTimezoneMeta, computeNextScheduledRunAt } = require('../lib/date-utils');
 const {
-  fetchCurrentSeason, fetchCurrentWeek, fetchAllLeaderboards,
+  fetchCurrentSeason, fetchAllLeaderboards,
   resolvePositions, fetchLeagueLogos, POSITIONS,
-} = require('../lib/totw-client');
+} = require('../lib/superliga-client');
 
 const TIMEZONE = 'Europe/Bucharest';
 const TICK_MS  = 60 * 1000;
-const SCHEDULE = { hour: Number(process.env.TOTW_HOUR) || 18, days: [3] };
-const WAKEUP_HOUR = SCHEDULE.hour - 1; // Wake 1 hour before post time
+const SCHEDULE = { hour: Number(process.env.TOTW_HOUR) || 20, days: [6] };
 
 const { config: channelConfig } = require('../lib/channel-config');
 const CH_TOTW = () => channelConfig.totwChannelId;
@@ -36,32 +35,13 @@ async function postAndClean(channel, imgPath) {
   try { await fs.promises.unlink(imgPath); } catch { /* ignore */ }
 }
 
-function getGracePeriodMs() {
-  const now = new Date();
-  const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TIMEZONE,
-    weekday: 'short',
-    hour: '2-digit',
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(now);
-  const getByType = (type) => parts.find(p => p.type === type)?.value;
-  
-  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
-  const weekday = weekdayMap[getByType('weekday')] ?? -1;
-  const hour = Number(getByType('hour')) ?? -1;
-  
-  // Active window: Wed 17:00-18:00 (WAKEUP_HOUR to SCHEDULE.hour)
-  const isInWindow = weekday === 3 && hour >= WAKEUP_HOUR && hour <= SCHEDULE.hour;
-  return isInWindow ? 0 : 45000; // 45 sec grace period if sleeping
-}
-
 // ── Core build + post ──────────────────────────────────────────────────────────
 
-async function buildAndPost(client) {
-  const season       = await fetchCurrentSeason();
-  const week         = await fetchCurrentWeek(season);
-  const leaderboards = await fetchAllLeaderboards(season, true); // weekly=true
+async function buildAndPost(client, channel = null) {
+  const season                    = await fetchCurrentSeason();
+  const { leaderboards, week: lbWeek } = await fetchAllLeaderboards(season, true); // weekly=true
+  // Use week from the API response (authoritative); fall back to 1 if omitted.
+  const week = lbWeek ?? 1;
 
   const hasData = POSITIONS.some(pos =>
     (leaderboards[pos] || []).some(p => Number(p.matches_played) > 0),
@@ -75,7 +55,7 @@ async function buildAndPost(client) {
     players, season, week, leagueLogoUrl, communityLogoUrl, isToty: false,
   });
 
-  const ch = await getChannel(client, CH_TOTW());
+  const ch = channel ?? await getChannel(client, CH_TOTW());
   if (!ch) {
     console.warn('[TOTW] TOTW_CHANNEL_ID not configured or channel inaccessible — image not posted.');
     try { await fs.promises.unlink(imgPath); } catch { /* ignore */ }
@@ -93,17 +73,12 @@ async function buildAndPost(client) {
 async function tick(client) {
   const meta = getNowInTimezoneMeta(TIMEZONE);
   if (!SCHEDULE.days.includes(meta.weekday)) return;
-  // Only active between wakeup and post hour (inclusive)
-  if (meta.hour < WAKEUP_HOUR || meta.hour > SCHEDULE.hour) return;
-  
-  // Actually post at exactly SCHEDULE.hour
-  if (meta.hour === SCHEDULE.hour) {
-    const slotKey = `${meta.dayKey}:${SCHEDULE.hour}:totw`;
-    if (runLog.has(slotKey)) return;
-    runLog.add(slotKey);
-    console.log(`[TOTW] Scheduled fire at ${meta.dayKey} ${SCHEDULE.hour}:00`);
-    await buildAndPost(client).catch(err => console.error('[TOTW] Tick error:', err.message));
-  }
+  if (meta.hour !== SCHEDULE.hour) return;
+  const slotKey = `${meta.dayKey}:${SCHEDULE.hour}:totw`;
+  if (runLog.has(slotKey)) return;
+  runLog.add(slotKey);
+  console.log(`[TOTW] Scheduled fire at ${meta.dayKey} ${SCHEDULE.hour}:00`);
+  await buildAndPost(client).catch(err => console.error('[TOTW] Tick error:', err.message));
 }
 
 // ── Slash command ──────────────────────────────────────────────────────────────
@@ -113,7 +88,7 @@ const data = new SlashCommandBuilder()
   .setDescription('Team of the Week — Superliga România')
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addSubcommand(sub =>
-    sub.setName('start').setDescription('Start automatic Wednesday 18:00 TOTW posting'),
+    sub.setName('start').setDescription('Start automatic Saturday 20:00 TOTW posting'),
   )
   .addSubcommand(sub =>
     sub.setName('stop').setDescription('Stop automatic TOTW monitoring'),
@@ -133,7 +108,7 @@ module.exports = {
       }
       tickTimer = setInterval(() => tick(interaction.client).catch(console.error), TICK_MS);
       return interaction.reply({
-        content: '✅ TOTW monitoring started — posts every Wednesday at 18:00 Bucharest time.',
+        content: '✅ TOTW monitoring started — posts every Saturday at 20:00 Bucharest time.',
         ephemeral: true,
       });
     }
@@ -148,17 +123,9 @@ module.exports = {
     }
 
     if (sub === 'post') {
-      const gracePeriod = getGracePeriodMs();
-      if (gracePeriod > 0) {
-        await interaction.deferReply({ ephemeral: true });
-        await interaction.editReply(`⏳ Service waking up — please wait ${gracePeriod / 1000 | 0} seconds...`);
-        await new Promise(r => setTimeout(r, gracePeriod));
-        await interaction.editReply({ content: '✅ Service ready — fetching TOTW...' });
-      } else {
-        await interaction.deferReply({ ephemeral: true });
-      }
+      await interaction.deferReply({ ephemeral: true });
       try {
-        const result = await buildAndPost(interaction.client);
+        const result = await buildAndPost(interaction.client, interaction.channel);
         if (!result) {
           await interaction.editReply('⚠️ No match data available for the current week — nothing posted.');
         } else if (!result.posted) {
@@ -175,7 +142,7 @@ module.exports = {
   startMonitoring(client) {
     if (tickTimer) return false;
     tickTimer = setInterval(() => tick(client).catch(console.error), TICK_MS);
-    console.log('[TOTW] Auto-started monitoring (Wednesday 18:00 Bucharest).');
+    console.log('[TOTW] Auto-started monitoring (Saturday 20:00 Bucharest).');
     return true;
   },
 

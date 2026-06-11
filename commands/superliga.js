@@ -2,7 +2,7 @@
 
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const fs = require('fs');
-const { generateClasamentImage, generateEtapaImage, formatDateRo } = require('../generators/vpg-superliga');
+const { generateClasamentImage, generateEtapaImage, formatDateRo } = require('../generators/superliga');
 const { getNowInTimezoneMeta, computeNextScheduledRunAt } = require('../lib/date-utils');
 
 const API_BASE       = 'https://api.virtualprogaming.com/public/leagues/Superliga-Romania';
@@ -20,11 +20,9 @@ const SUPERLIGA_FIXTURES_HOUR = Number(process.env.SUPERLIGA_FIXTURES_HOUR) || 1
 const SUPERLIGA_RESULTS_HOUR  = Number(process.env.SUPERLIGA_RESULTS_HOUR)  || 10;
 
 const SCHEDULES = [
-  { hour: SUPERLIGA_FIXTURES_HOUR, days: [1], targets: ['scheduled'], scheduledSessionIndex: 0 },
-  { hour: SUPERLIGA_RESULTS_HOUR,  days: [3], targets: ['results', 'clasament', 'scheduled'], resultsDayOffset: -1, scheduledSessionIndex: 0 },
+  { hour: SUPERLIGA_FIXTURES_HOUR, days: [1], targets: ['scheduled'] },
+  { hour: SUPERLIGA_RESULTS_HOUR,  days: [3], targets: ['results', 'clasament', 'scheduled'], resultsDayOffset: -1 },
 ];
-
-const WAKEUP_HOUR = SUPERLIGA_FIXTURES_HOUR - 1; // Wake 1 hour before post time (09:00)
 
 const runLog  = new Set();
 let tickTimer  = null;
@@ -125,10 +123,11 @@ function mapMatch(r) {
   };
 }
 
-// Fetch scheduled matches for a game week by session index.
-// Groups all scheduled matches by their Mon–Sun calendar week, sorts ascending,
-// and returns the week at sessionIndex (0 = nearest upcoming, 1 = one beyond, …).
-async function fetchScheduledByGameWeek(season, sessionIndex = 0) {
+// Fetch scheduled matches for a game week.
+// anchorMonday (YYYY-MM-DD) is the Monday of the current calendar week.
+// All scheduled matches in that Mon–Sun week are returned together,
+// so rescheduled games spread across different days of the week are never missed.
+async function fetchScheduledByGameWeek(season, anchorMonday) {
   const all = [];
   const limit = 100;
   for (let offset = 0; offset < 500; offset += limit) {
@@ -147,8 +146,10 @@ async function fetchScheduledByGameWeek(season, sessionIndex = 0) {
     byWeek.get(wk).push(m);
   }
   const sortedWeeks = [...byWeek.keys()].sort();
-  if (sessionIndex >= sortedWeeks.length) return [];
-  return (byWeek.get(sortedWeeks[sessionIndex]) ?? [])
+  // Return all scheduled matches in the anchor Mon–Sun week.
+  // If no matches fall in this exact week (e.g. no games scheduled yet),
+  // fall back to the nearest upcoming week so the post is never empty.
+  return (byWeek.get(anchorMonday) ?? byWeek.get(sortedWeeks[0]) ?? [])
     .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 }
 
@@ -206,30 +207,9 @@ async function getChannel(client, id) {
   } catch { return null; }
 }
 
-function getGracePeriodMs() {
-  const now = new Date();
-  const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TIMEZONE,
-    weekday: 'short',
-    hour: '2-digit',
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(now);
-  const getByType = (type) => parts.find(p => p.type === type)?.value;
-  
-  const weekdayMap = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 0 };
-  const weekday = weekdayMap[getByType('weekday')] ?? -1;
-  const hour = Number(getByType('hour')) ?? -1;
-  
-  // Active window: Mon/Wed 09:00-10:00 (WAKEUP_HOUR to 10:00)
-  const isMatchDay = [1, 3].includes(weekday);
-  const isInWindow = isMatchDay && hour >= WAKEUP_HOUR && hour <= SUPERLIGA_FIXTURES_HOUR;
-  return isInWindow ? 0 : 45000; // 45 sec grace period if sleeping
-}
-
 // ── Run targets ────────────────────────────────────────────────────────────────
 
-async function runTargets(client, targets, dayKey, { force = false, resultsDayKey, scheduledSessionIndex = 0 } = {}) {
+async function runTargets(client, targets, dayKey, { force = false, resultsDayKey, anchorWeekMonday = null, overrideChannel = null } = {}) {
   const targetSet = new Set(targets);
   let posted = 0;
   let season;
@@ -250,7 +230,7 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
     try {
       if (entries.length) {
         const imgPath = await generateClasamentImage({ entries, seasonLabel: `Sezon ${season}`, leagueLogoUrl, communityLogoUrl });
-        const ch = await getChannel(client, CH_CLASAMENT());
+        const ch = overrideChannel ?? await getChannel(client, CH_CLASAMENT());
         if (ch) { await postAndClean(ch, imgPath); posted++; console.log('[Superliga] Posted clasament.'); }
         else { warnings.push('No clasament channel configured (SUPERLIGA_CLASAMENT_CHANNEL_ID).'); console.warn('[Superliga] No clasament channel configured.'); }
       } else { warnings.push('Clasament table empty — nothing to post.'); }
@@ -264,10 +244,9 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
       let matches;
 
       if (target === 'scheduled') {
-        matches = await fetchScheduledByGameWeek(season, scheduledSessionIndex);
+        matches = await fetchScheduledByGameWeek(season, anchorWeekMonday);
         if (!matches.length) {
-          const label = scheduledSessionIndex === 0 ? 'nearest upcoming' : `+${scheduledSessionIndex} game week(s)`;
-          const msg   = `No scheduled matches found (${label}).`;
+          const msg = `No scheduled matches found (week of ${anchorWeekMonday}).`;
           warnings.push(msg);
           console.log(`[Superliga] ${msg}`);
           continue;
@@ -303,7 +282,7 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
           : maxPlayed + idx + 1);
         const dateLabel  = formatDateRo(dayMatches[0].datetime);
         const imgPath    = await generateEtapaImage({ matches: dayMatches, etapaNumber, dateLabel, isResults: target === 'results', leagueLogoUrl, communityLogoUrl });
-        const ch         = await getChannel(client, channelId);
+        const ch         = overrideChannel ?? await getChannel(client, channelId);
         if (ch) { await postAndClean(ch, imgPath); posted++; console.log(`[Superliga] Posted ${target} etapa ${etapaNumber} (${dayMatches.length} match(es)).`); }
         else { warnings.push(`No channel for ${target} (SUPERLIGA_${target === 'results' ? 'RESULTS' : 'SCHEDULE'}_CHANNEL_ID not set).`); console.warn(`[Superliga] No channel for ${target}.`); }
       }
@@ -314,25 +293,19 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
 }
 
 // ── Schedule tick ──────────────────────────────────────────────────────────────
-// Wakes up 1 hour before scheduled post time to keep service alive
 
 async function tick(client) {
   const meta = getNowInTimezoneMeta(TIMEZONE);
   for (const sched of SCHEDULES) {
     if (!sched.days.includes(meta.weekday)) continue;
-    // Only active between wakeup and post hour (inclusive)
-    if (meta.hour < WAKEUP_HOUR || meta.hour > sched.hour) continue;
-    
-    // Only actually post at exactly the scheduled hour
     if (meta.hour !== sched.hour) continue;
-    
     const slotKey = `${meta.dayKey}:${sched.hour}:superliga`;
     if (runLog.has(slotKey)) continue;
     runLog.add(slotKey);
-    const resultsDayKey        = sched.resultsDayOffset ? offsetDayKey(meta.dayKey, sched.resultsDayOffset) : meta.dayKey;
-    const scheduledSessionIndex = sched.scheduledSessionIndex ?? 0;
-    console.log(`[Superliga] Firing schedule hour=${sched.hour} targets=${sched.targets.join(',')} day=${meta.dayKey}`);
-    await runTargets(client, sched.targets, meta.dayKey, { resultsDayKey, scheduledSessionIndex }).catch(err => console.error('[Superliga] Tick error:', err.message));
+    const resultsDayKey         = sched.resultsDayOffset ? offsetDayKey(meta.dayKey, sched.resultsDayOffset) : meta.dayKey;
+    const anchorWeekMonday = mondayOfWeek(meta.dayKey);
+    console.log(`[Superliga] Firing schedule hour=${sched.hour} targets=${sched.targets.join(',')} day=${meta.dayKey} week=${anchorWeekMonday}`);
+    await runTargets(client, sched.targets, meta.dayKey, { resultsDayKey, anchorWeekMonday }).catch(err => console.error('[Superliga] Tick error:', err.message));
   }
 }
 
@@ -353,8 +326,7 @@ const data = new SlashCommandBuilder()
           .addChoices(
             { name: 'All',                                value: 'all'                      },
             { name: 'Clasament only',                     value: 'clasament'                },
-            { name: 'Programate (sapt. urmatoare)',       value: 'scheduled'                },
-            { name: 'Programate (sapt. +2)',              value: 'scheduled_next'           },
+            { name: 'Programate (sapt. curenta)',         value: 'scheduled'                },
             { name: 'Rezultate',                          value: 'results'                  },
             { name: 'Rezultate + Clasament',              value: 'results,clasament'        },
             { name: 'Programate + Clasament',             value: 'scheduled,clasament'      },
@@ -390,24 +362,16 @@ module.exports = {
     }
 
     if (sub === 'post') {
-      const gracePeriod = getGracePeriodMs();
-      if (gracePeriod > 0) {
-        await interaction.deferReply({ ephemeral: true });
-        await interaction.editReply(`⏳ Service waking up — please wait ${gracePeriod / 1000 | 0} seconds...`);
-        await new Promise(r => setTimeout(r, gracePeriod));
-        await interaction.editReply({ content: '✅ Service ready — generating images...' });
-      } else {
-        await interaction.deferReply({ ephemeral: true });
-      }
+      await interaction.deferReply({ ephemeral: true });
       try {
-        const raw  = interaction.options.getString('targets') || 'all';
-        const meta = getNowInTimezoneMeta(TIMEZONE);
-        // 'scheduled_next' = second upcoming game week (+1); everything else = nearest (0)
-        const scheduledSessionIndex = raw.includes('scheduled_next') ? 1 : 0;
+        const raw     = interaction.options.getString('targets') || 'all';
+        const meta    = getNowInTimezoneMeta(TIMEZONE);
         const targets = raw === 'all'
           ? ['scheduled', 'results', 'clasament']
-          : raw.split(',').map(t => t.replace('scheduled_next', 'scheduled').replace('scheduled_current', 'scheduled'));
-        const { posted, warnings } = await runTargets(interaction.client, targets, meta.dayKey, { force: true, scheduledSessionIndex });
+          : raw.split(',');
+        // Always anchor to the current Mon–Sun week — same logic as the auto-tick.
+        const anchorWeekMonday = mondayOfWeek(meta.dayKey);
+        const { posted, warnings } = await runTargets(interaction.client, targets, meta.dayKey, { force: true, anchorWeekMonday, overrideChannel: interaction.channel });
         const lines = [];
         if (posted > 0) lines.push(`✅ Posted ${posted} image(s) (targets: ${targets.join(', ')}).`);
         else lines.push(`⚠️ No images posted (targets: ${targets.join(', ')}).`);
