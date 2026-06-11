@@ -4,6 +4,7 @@ require('dotenv').config();
 
 const fs   = require('fs');
 const path = require('path');
+const http = require('http');
 const { Client, Collection, Events, GatewayIntentBits } = require('discord.js');
 
 const { config: channelConfig } = require('./lib/channel-config');
@@ -84,3 +85,10 @@ client.on(Events.InteractionCreate, async interaction => {
 });
 
 client.login(token);
+
+// ── Health-check server (required by Render free-tier web services) ───────────
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('OK');
+}).listen(PORT, () => console.log(`[VPG Romania] Health-check server on port ${PORT}`));
