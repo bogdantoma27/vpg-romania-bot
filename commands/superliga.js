@@ -4,6 +4,7 @@ const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const fs = require('fs');
 const { generateClasamentImage, generateEtapaImage, formatDateRo } = require('../generators/superliga');
 const { getNowInTimezoneMeta, computeNextScheduledRunAt } = require('../lib/date-utils');
+const { computeSeasonWeekNumber } = require('../lib/superliga-client');
 
 const API_BASE       = 'https://api.virtualprogaming.com/public/leagues/Superliga-Romania';
 const VPG_IMAGE_BASE = 'https://virtualprogaming.com/cdn-cgi/imagedelivery/cl8ocWLdmZDs72LEaQYaYw';
@@ -209,22 +210,19 @@ async function getChannel(client, id) {
 
 // ── Run targets ────────────────────────────────────────────────────────────────
 
-async function runTargets(client, targets, dayKey, { force = false, resultsDayKey, anchorWeekMonday = null, overrideChannel = null } = {}) {
+async function runTargets(client, targets, dayKey, { force = false, resultsDayKey, anchorWeekMonday = null, weekOffset = 0, overrideChannel = null } = {}) {
   const targetSet = new Set(targets);
   let posted = 0;
   let season;
   try { season = await fetchCurrentSeason(); }
-  catch (err) { console.error('[Superliga] Could not fetch season:', err.message); return { posted: 0, warnings: ['Could not fetch season'] }; }
+  catch (err) { console.error('[Superliga] Could not fetch season:', err.message); return { posted: 0, warnings: ['Could not fetch season'], weekInfo: null }; }
 
   const { leagueLogoUrl, communityLogoUrl } = await fetchLeagueLogos();
 
   const warnings = [];
   let entries = [];
-  try {
-    entries = await fetchTable(season);
-  } catch (err) { console.error('[Superliga] Failed to fetch base data:', err.message); }
-
-  const maxPlayed = entries.reduce((m, e) => Math.max(m, e.played ?? 0), 0);
+  let weekInfo = null;
+  try { entries = await fetchTable(season); } catch (err) { console.error('[Superliga] Failed to fetch base data:', err.message); }
 
   if (targetSet.has('clasament')) {
     try {
@@ -232,64 +230,65 @@ async function runTargets(client, targets, dayKey, { force = false, resultsDayKe
         const imgPath = await generateClasamentImage({ entries, seasonLabel: `Sezon ${season}`, leagueLogoUrl, communityLogoUrl });
         const ch = overrideChannel ?? await getChannel(client, CH_CLASAMENT());
         if (ch) { await postAndClean(ch, imgPath); posted++; console.log('[Superliga] Posted clasament.'); }
-        else { warnings.push('No clasament channel configured (SUPERLIGA_CLASAMENT_CHANNEL_ID).'); console.warn('[Superliga] No clasament channel configured.'); }
+        else { warnings.push('No clasament channel configured (SUPERLIGA_CLASAMENT_CHANNEL_ID).'); }
       } else { warnings.push('Clasament table empty — nothing to post.'); }
     } catch (err) { warnings.push(`Clasament error: ${err.message}`); console.error('[Superliga] Clasament error:', err.message); }
   }
 
-  for (const target of ['scheduled', 'results']) {
-    if (!targetSet.has(target)) continue;
-    const channelId = target === 'results' ? CH_RESULTS() : CH_SCHEDULE();
+  // Compute the effective anchor Monday for fixtures (supports week offset)
+  const effectiveAnchor = anchorWeekMonday ?? (() => {
+    const base = mondayOfWeek(dayKey);
+    return weekOffset ? offsetDayKey(base, weekOffset * 7) : base;
+  })();
+
+  if (targetSet.has('scheduled')) {
     try {
-      let matches;
+      weekInfo = (() => {
+        const mon = new Date(`${effectiveAnchor}T12:00:00Z`);
+        const sun = new Date(mon); sun.setUTCDate(mon.getUTCDate() + 6);
+        const fmt = d => d.toLocaleDateString('ro-RO', { timeZone: 'Europe/Bucharest', day: 'numeric', month: 'short' });
+        return `${fmt(mon)} - ${fmt(sun)} ${sun.getFullYear()}`;
+      })();
 
-      if (target === 'scheduled') {
-        matches = await fetchScheduledByGameWeek(season, anchorWeekMonday);
-        if (!matches.length) {
-          const msg = `No scheduled matches found (week of ${anchorWeekMonday}).`;
-          warnings.push(msg);
-          console.log(`[Superliga] ${msg}`);
-          continue;
-        }
+      const matches = await fetchScheduledByGameWeek(season, effectiveAnchor);
+      if (!matches.length) {
+        warnings.push(`No scheduled matches found for week ${effectiveAnchor} (${weekInfo}).`);
       } else {
-        const effectiveDay = resultsDayKey || dayKey;
-        matches = force
-          ? await fetchLatestEtapaMatches(season)
-          : await fetchMatchesForDay(season, 'complete', effectiveDay);
-        if (!matches.length) {
-          const msg = force ? 'No completed matches found.' : `No results for ${effectiveDay}.`;
-          warnings.push(msg);
-          console.log(`[Superliga] ${msg}`);
-          continue;
-        }
+        // Etapa number = season week position (not the API's match_day session count)
+        const etapaNumber = await computeSeasonWeekNumber(season, effectiveAnchor);
+        const dateLabel   = formatDateRo(matches[0].datetime);
+        const imgPath = await generateEtapaImage({ matches, etapaNumber, dateLabel, isResults: false, leagueLogoUrl, communityLogoUrl });
+        const ch = overrideChannel ?? await getChannel(client, CH_SCHEDULE());
+        if (ch) { await postAndClean(ch, imgPath); posted++; console.log(`[Superliga] Posted scheduled etapa ${etapaNumber} (${matches.length} match(es)).`); }
+        else { try { await fs.promises.unlink(imgPath); } catch { /* ignore */ } warnings.push('No schedule channel configured (SUPERLIGA_SCHEDULE_CHANNEL_ID).'); }
       }
-
-      const byMatchDay      = new Map();
-      for (const m of matches) {
-        if (!byMatchDay.has(m.match_day)) byMatchDay.set(m.match_day, []);
-        byMatchDay.get(m.match_day).push(m);
-      }
-      const sortedMatchDays = [...byMatchDay.keys()].sort((a, b) => a - b);
-      const sessionSize     = sortedMatchDays.length;
-
-      for (let idx = 0; idx < sessionSize; idx++) {
-        const absDay     = sortedMatchDays[idx];
-        const dayMatches = byMatchDay.get(absDay);
-        // Use the API's match_day (round number) directly — handles rescheduled matches correctly.
-        // Fall back to positional estimate only when match_day is missing/zero.
-        const etapaNumber = absDay > 0 ? absDay : (target === 'results'
-          ? maxPlayed - (sessionSize - 1 - idx)
-          : maxPlayed + idx + 1);
-        const dateLabel  = formatDateRo(dayMatches[0].datetime);
-        const imgPath    = await generateEtapaImage({ matches: dayMatches, etapaNumber, dateLabel, isResults: target === 'results', leagueLogoUrl, communityLogoUrl });
-        const ch         = overrideChannel ?? await getChannel(client, channelId);
-        if (ch) { await postAndClean(ch, imgPath); posted++; console.log(`[Superliga] Posted ${target} etapa ${etapaNumber} (${dayMatches.length} match(es)).`); }
-        else { warnings.push(`No channel for ${target} (SUPERLIGA_${target === 'results' ? 'RESULTS' : 'SCHEDULE'}_CHANNEL_ID not set).`); console.warn(`[Superliga] No channel for ${target}.`); }
-      }
-    } catch (err) { warnings.push(`${target} error: ${err.message}`); console.error(`[Superliga] ${target} error:`, err.message); }
+    } catch (err) { warnings.push(`Scheduled error: ${err.message}`); console.error('[Superliga] Scheduled error:', err.message); }
   }
+
+  if (targetSet.has('results')) {
+    try {
+      const effectiveDay = resultsDayKey || dayKey;
+      const matches = force ? await fetchLatestEtapaMatches(season) : await fetchMatchesForDay(season, 'complete', effectiveDay);
+      if (!matches.length) {
+        warnings.push(force ? 'No completed matches found.' : `No results for ${effectiveDay}.`);
+      } else {
+        const firstDk = matchDayKey(matches[0].datetime ?? '') || effectiveDay;
+        const d   = new Date(`${firstDk}T12:00:00Z`);
+        const dow = d.getUTCDay(); const diff = dow === 0 ? 6 : dow - 1;
+        const mon = new Date(d); mon.setUTCDate(d.getUTCDate() - diff);
+        const resultMon = mon.toISOString().slice(0, 10);
+        const etapaNumber = await computeSeasonWeekNumber(season, resultMon);
+        const dateLabel   = formatDateRo(matches[0].datetime);
+        const imgPath = await generateEtapaImage({ matches, etapaNumber, dateLabel, isResults: true, leagueLogoUrl, communityLogoUrl });
+        const ch = overrideChannel ?? await getChannel(client, CH_RESULTS());
+        if (ch) { await postAndClean(ch, imgPath); posted++; console.log(`[Superliga] Posted results etapa ${etapaNumber} (${matches.length} match(es)).`); }
+        else { try { await fs.promises.unlink(imgPath); } catch { /* ignore */ } warnings.push('No results channel configured (SUPERLIGA_RESULTS_CHANNEL_ID).'); }
+      }
+    } catch (err) { warnings.push(`Results error: ${err.message}`); console.error('[Superliga] Results error:', err.message); }
+  }
+
   if (posted > 0) lastPostAt = new Date().toISOString();
-  return { posted, warnings };
+  return { posted, warnings, weekInfo };
 }
 
 // ── Schedule tick ──────────────────────────────────────────────────────────────
@@ -313,25 +312,38 @@ async function tick(client) {
 
 const data = new SlashCommandBuilder()
   .setName('superliga')
-  .setDescription('Manage VPG Superliga România auto-posting')
+  .setDescription('VPG Superliga Romania - fixtures, results and standings')
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addSubcommand(sub => sub.setName('start').setDescription('Start automatic schedule monitoring'))
   .addSubcommand(sub => sub.setName('stop').setDescription('Stop automatic schedule monitoring'))
   .addSubcommand(sub =>
     sub.setName('post')
-      .setDescription('Force-post right now')
+      .setDescription('Post to configured channels right now (admin broadcast)')
       .addStringOption(opt =>
-        opt.setName('targets')
-          .setDescription('What to post (default: all)')
-          .addChoices(
-            { name: 'All',                                value: 'all'                      },
-            { name: 'Clasament only',                     value: 'clasament'                },
-            { name: 'Programate (sapt. curenta)',         value: 'scheduled'                },
-            { name: 'Rezultate',                          value: 'results'                  },
-            { name: 'Rezultate + Clasament',              value: 'results,clasament'        },
-            { name: 'Programate + Clasament',             value: 'scheduled,clasament'      },
-          )
-      )
+        opt.setName('targets').setDescription('What to post (default: all)').addChoices(
+          { name: 'All', value: 'all' },
+          { name: 'Clasament only', value: 'clasament' },
+          { name: 'Programate (sapt. curenta)', value: 'scheduled' },
+          { name: 'Rezultate', value: 'results' },
+          { name: 'Rezultate + Clasament', value: 'results,clasament' },
+          { name: 'Programate + Clasament', value: 'scheduled,clasament' },
+        ))
+      .addIntegerOption(opt =>
+        opt.setName('week').setDescription('Week offset: 0=current (default), 1=next week, -1=last week').setMinValue(-10).setMaxValue(10)),
+  )
+  .addSubcommand(sub =>
+    sub.setName('preview')
+      .setDescription('Generate and send only to you (ephemeral - not posted in channels)')
+      .addStringOption(opt =>
+        opt.setName('targets').setDescription('What to preview (default: scheduled)').addChoices(
+          { name: 'Programate (fixtures)', value: 'scheduled' },
+          { name: 'Rezultate (results)', value: 'results' },
+          { name: 'Clasament (standings)', value: 'clasament' },
+          { name: 'Programate + Clasament', value: 'scheduled,clasament' },
+          { name: 'Rezultate + Clasament', value: 'results,clasament' },
+        ))
+      .addIntegerOption(opt =>
+        opt.setName('week').setDescription('Week offset: 0=current (default), 1=next week, -1=last week').setMinValue(-10).setMaxValue(10)),
   );
 
 module.exports = {
@@ -364,22 +376,32 @@ module.exports = {
     if (sub === 'post') {
       await interaction.deferReply({ ephemeral: true });
       try {
-        const raw     = interaction.options.getString('targets') || 'all';
-        const meta    = getNowInTimezoneMeta(TIMEZONE);
-        const targets = raw === 'all'
-          ? ['scheduled', 'results', 'clasament']
-          : raw.split(',');
-        // Always anchor to the current Mon–Sun week — same logic as the auto-tick.
-        const anchorWeekMonday = mondayOfWeek(meta.dayKey);
-        const { posted, warnings } = await runTargets(interaction.client, targets, meta.dayKey, { force: true, anchorWeekMonday, overrideChannel: interaction.channel });
-        const lines = [];
-        if (posted > 0) lines.push(`✅ Posted ${posted} image(s) (targets: ${targets.join(', ')}).`);
-        else lines.push(`⚠️ No images posted (targets: ${targets.join(', ')}).`);
-        if (warnings.length) lines.push(...warnings.map(w => `• ${w}`));
+        const raw        = interaction.options.getString('targets') || 'all';
+        const weekOffset = interaction.options.getInteger('week')   ?? 0;
+        const meta       = getNowInTimezoneMeta(TIMEZONE);
+        const targets    = raw === 'all' ? ['scheduled', 'results', 'clasament'] : raw.split(',');
+        const { posted, warnings, weekInfo } = await runTargets(interaction.client, targets, meta.dayKey, { force: true, weekOffset });
+        const lines = [posted > 0 ? `Posted ${posted} image(s) (${targets.join(', ')}).` : `No images posted (${targets.join(', ')}).`];
+        if (weekInfo && targets.includes('scheduled')) lines.push(`Week: ${weekInfo}`);
+        if (warnings.length) lines.push(...warnings.map(w => `- ${w}`));
         await interaction.editReply(lines.join('\n'));
-      } catch (err) {
-        await interaction.editReply(`❌ Error: ${err.message}`);
-      }
+      } catch (err) { await interaction.editReply(`Error: ${err.message}`); }
+      return;
+    }
+
+    if (sub === 'preview') {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const raw        = interaction.options.getString('targets') || 'scheduled';
+        const weekOffset = interaction.options.getInteger('week')   ?? 0;
+        const meta       = getNowInTimezoneMeta(TIMEZONE);
+        const targets    = raw.split(',');
+        const { posted, warnings, weekInfo } = await runTargets(interaction.client, targets, meta.dayKey, { force: true, weekOffset, overrideChannel: interaction.channel });
+        const lines = [posted > 0 ? `Preview ready (${targets.join(', ')}).` : `Nothing to preview (${targets.join(', ')}).`];
+        if (targets.includes('scheduled') && weekInfo) lines.push(`Showing week: ${weekInfo}`);
+        if (warnings.length) lines.push(...warnings.map(w => `- ${w}`));
+        await interaction.editReply(lines.join('\n'));
+      } catch (err) { await interaction.editReply(`Error: ${err.message}`); }
     }
   },
 

@@ -6,7 +6,7 @@ const { generateTOTWImage } = require('../generators/totw');
 const { getNowInTimezoneMeta, computeNextScheduledRunAt } = require('../lib/date-utils');
 const {
   fetchCurrentSeason, fetchAllLeaderboards,
-  resolvePositions, fetchLeagueLogos, POSITIONS,
+  resolvePositions, fetchLeagueLogos, toCalendarWeek, POSITIONS,
 } = require('../lib/superliga-client');
 
 const TIMEZONE = 'Europe/Bucharest';
@@ -19,6 +19,8 @@ const CH_TOTW = () => channelConfig.totwChannelId;
 const runLog  = new Set();
 let tickTimer  = null;
 let lastPostAt = null;
+let lastPostedSeason = null;
+let lastPostedWeek   = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -40,13 +42,20 @@ async function postAndClean(channel, imgPath) {
 async function buildAndPost(client, channel = null) {
   const season                    = await fetchCurrentSeason();
   const { leaderboards, week: lbWeek } = await fetchAllLeaderboards(season, true); // weekly=true
-  // Use week from the API response (authoritative); fall back to 1 if omitted.
-  const week = lbWeek ?? 1;
+  // Convert raw session-week to calendar week (fixes the "doubled week" bug).
+  // The API counts match sessions, not calendar weeks; dividing by 2 corrects it.
+  const week = lbWeek != null ? toCalendarWeek(lbWeek) : 1;
 
   const hasData = POSITIONS.some(pos =>
     (leaderboards[pos] || []).some(p => Number(p.matches_played) > 0),
   );
   if (!hasData) return null;
+
+  // Stop posting if the same week repeats (season hasn't progressed)
+  if (season === lastPostedSeason && week === lastPostedWeek) {
+    console.log(`[TOTW] Season ${season} Week ${week} already posted — skipping (waiting for new week).`);
+    return null;
+  }
 
   const players = resolvePositions(leaderboards);
   const { leagueLogoUrl, communityLogoUrl } = await fetchLeagueLogos();
@@ -63,6 +72,8 @@ async function buildAndPost(client, channel = null) {
   }
   await postAndClean(ch, imgPath);
   lastPostAt = new Date().toISOString();
+  lastPostedSeason = season;
+  lastPostedWeek = week;
   console.log(`[TOTW] Posted S${season} W${week}.`);
   return { season, week, posted: true };
 }
@@ -94,7 +105,10 @@ const data = new SlashCommandBuilder()
     sub.setName('stop').setDescription('Stop automatic TOTW monitoring'),
   )
   .addSubcommand(sub =>
-    sub.setName('post').setDescription('Post TOTW right now (current week, or skips if no data)'),
+    sub.setName('post').setDescription('Post TOTW right now to the configured channel'),
+  )
+  .addSubcommand(sub =>
+    sub.setName('preview').setDescription('Generate TOTW and send only to you (ephemeral — not posted in channels)'),
   );
 
 module.exports = {
@@ -125,13 +139,28 @@ module.exports = {
     if (sub === 'post') {
       await interaction.deferReply({ ephemeral: true });
       try {
-        const result = await buildAndPost(interaction.client, interaction.channel);
+        const result = await buildAndPost(interaction.client);
         if (!result) {
           await interaction.editReply('⚠️ No match data available for the current week — nothing posted.');
         } else if (!result.posted) {
           await interaction.editReply('⚠️ Channel not found — make sure `TOTW_CHANNEL_ID` is set correctly and the bot has access.');
         } else {
           await interaction.editReply(`✅ Posted TOTW S${result.season} W${result.week}.`);
+        }
+      } catch (err) {
+        await interaction.editReply(`❌ Error: ${err.message}`);
+      }
+      return;
+    }
+
+    if (sub === 'preview') {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const result = await buildAndPost(interaction.client, interaction.channel);
+        if (!result) {
+          await interaction.editReply('⚠️ No match data available for the current week.');
+        } else {
+          await interaction.editReply(`✅ TOTW preview S${result.season} W${result.week} — visible only to you.`);
         }
       } catch (err) {
         await interaction.editReply(`❌ Error: ${err.message}`);
